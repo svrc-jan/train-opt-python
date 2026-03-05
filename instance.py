@@ -241,3 +241,4 @@ if __name__ == '__main__':
 	print(data)
 	inst = Instance(data)
 	test_op_succ(inst)
+	
