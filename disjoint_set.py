@@ -34,4 +34,4 @@ class Disjoint_set:
 		for v in range(self.n_items):
 			sets[self.find_set(v)].append(v)
 
-		return list(sets.values())
+		return sets

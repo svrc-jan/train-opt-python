@@ -1,13 +1,11 @@
-command="./instance.py"
+command="./path_select.py"
 
-for file in data/testing/*
+for file in data/testing/*.json
 do
-    echo $file
     $command "$file"
 done
 
-for file in data/*
+for file in data/*.json
 do
-    echo $file
     $command "$file"
 done

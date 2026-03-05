@@ -1,10 +1,9 @@
 #!.venv/bin/python3
 import sys
 
-from gurobipy import GRB
 
 from instance import Instance
-from train_interval import Model
+from res_interval import Model
 
 DEFAULT_DATA = 'data/nor1_critical_0.json'
 

@@ -3,17 +3,12 @@
 import sys
 import json
 
-
+from typing import List, Dict
+from collections import defaultdict
 from dataclasses import dataclass, field
-from functools import cached_property
-from typing import List, Dict, Set
-
-from disjoint_set import Disjoint_set
-from base_inst import Base_inst
 
 
-DEFAULT_DATA = 'data/smi_headway_5.json'
-MAX_DUR = 100000
+DEFAULT_DATA = 'data/nor1_critical_2.json'
 
 @dataclass
 class Res:
@@ -22,235 +17,227 @@ class Res:
 
 
 @dataclass
-class Obj:
-	time: int = 0
-	value: int = 0
-	is_bin: bool = False
-
-
-@dataclass
 class Op:
 	idx: int = -1
 	train: int = -1
 
-	level_start: int = -1
-	level_end: int = -1
-
 	dur: int = 0
 	start_lb: int = 0
-	start_ub: int = MAX_DUR
+	start_ub: int|None = None
 
+	succ: List[int] = field(default_factory=list)
+	pred: List[int] = field(default_factory=list)
 	res: List[Res] = field(default_factory=list)
 
-	obj: Obj|None = None
-
-
 	@property
-	def n_res(self) -> int:
-		return len(self.res)
+	def n_succ(self):
+		return len(self.succ)
 	
 	@property
-	def has_obj(self) -> int:
-		return not self.obj is None
+	def n_pred(self):
+		return len(self.pred)
 
-	def __str__(self) -> int:
-		return f'Op({self.idx})'
+	@property
+	def n_res(self):
+		return len(self.res)
 
 
 @dataclass
-class Level:
-	idx: int = -1
-	train: int = -1
-
-	time_lb: int = 0
-	time_ub: int = MAX_DUR
-
-	ops_in: List[int] = field(default_factory=list)
-	ops_out: List[int] = field(default_factory=list)
-
-
-	@property
-	def n_ops_in(self) -> int:
-		return len(self.ops_in)
-	
-	@property
-	def n_ops_out(self) -> int:
-		return len(self.ops_out)
+class Obj:
+	op_idx: int = -1
+	threshold: int = 0
+	coeff: int = 0
+	increment: int = 0
 
 
 @dataclass
 class Train:
 	idx: int = -1
-
 	op_start: int = -1
 	op_end: int = -1
 
-	level_start: int = -1
-	level_end: int = -1
-
-	res: Set[int] = field(default_factory=set)
-
-
 	@property
-	def op_last(self) -> int:
+	def n_ops(self):
+		return self.op_end - self.op_start
+	
+	@property
+	def op_last(self):
 		return self.op_end - 1
-
-	@property
-	def level_last(self) -> int:
-		return self.level_end - 1
-
-	@property
-	def n_ops(self) -> int:
-		return len(self.op_end - self.op_start)
 
 
 class Instance:
-	base_inst: Base_inst
-
 	trains: List[Train]
-	levels: List[Level]
 	ops: List[Op]
-	
-	__res_name_idx: Dict[str, int]
+	objs: List[Obj]
+	res_name_idx: Dict[str, int]
 
 	def __init__(self, jsn_file: str):
-		self.base_inst = Base_inst(jsn_file)
-		self.add_trains_ops()
-		self.add_levels()
+		self.parse_json_file(jsn_file)
+		self.make_pred_ops()
+		self.propagate_lb()
+		self.propagete_ub()
 
 
-	def add_trains_ops(self):
+	def parse_json_file(self, jsn_file: str):
 		self.trains = []
 		self.ops = []
+		self.objs = []
 
-		self.__res_name_idx = {}
-		self.__res_time = []
+		self.res_name_idx = defaultdict(lambda: self.n_res)
 
-		for base_train in self.base_inst.trains:
-			train = Train(idx=self.n_trains)
+		with open(jsn_file, 'r') as fd:
+			jsn = json.load(fd)
+		
+		for jsn_train in jsn['trains']:
+			self.parse_json_train(jsn_train)
 
-			train.op_start = self.n_ops
+		for jsn_obj in jsn['objective']:
+			self.parse_json_obj(jsn_obj)
 
-			for base_op in base_train.ops:
-				op = Op(
-					idx		=self.n_ops, 
-					train	=train.idx,
-					dur		=base_op.dur,
-					start_lb=base_op.start_lb,
-					start_ub=base_op.start_ub
-				)
 
-				if op.start_ub == -1:
-					op.start_ub = MAX_DUR
+	def parse_json_train(self, jsn_train: dict):
+		train = Train(idx=self.n_trains)
+		train.op_start = self.n_ops
+		
+		for jsn_op in jsn_train:
+			self.parse_json_op(jsn_op, train)
 
-				for base_res in base_op.res:
-					res = Res(idx=self.res_idx(base_res.name), time=base_res.time)
-					op.res.append(res)
+		train.op_end = self.n_ops
+		self.trains.append(train)
 
-					train.res.add(res.idx)
-				
-				self.ops.append(op)
+		# check if only last op is ending op (n_succ == 0), required for solver
+		for op in self.ops[train.op_start:train.op_last]:
+			assert(op.n_succ > 0)
+
+		assert(self.ops[train.op_last].n_succ == 0)
+
+
+	def parse_json_op(self, jsn_op: dict, train: Train):
+		op = Op(
+			idx 	=self.n_ops,
+			train 	=train.idx,
+			dur		=jsn_op['min_duration'],
+			start_lb=jsn_op.get('start_lb', 0),
+			start_ub=jsn_op.get('start_ub', None)
+		)
+
+		for s in jsn_op['successors']:
+			op.succ.append(s + train.op_start)
+
+		for jsn_res in jsn_op.get('resources', []):
+			res_name = jsn_res['resource']
+			res_time = jsn_res.get('release_time', 0)
 			
-			train.op_end = self.n_ops
-			self.trains.append(train)
+			op.res.append(Res(idx=self.res_name_idx[res_name], time=res_time))
+
+		self.ops.append(op)
 
 
-		for base_obj in self.base_inst.objs:
-			is_bin = base_obj.increment > 0
+	def parse_json_obj(self, jsn_obj):
+		if jsn_obj['type'] != 'op_delay':
+			return
+		
+		op_idx = self.trains[jsn_obj['train']].op_start + jsn_obj['operation']
+		
+		obj = Obj(
+			op_idx		=op_idx,
+			threshold	=jsn_obj.get('threshold', 0),
+			coeff		=jsn_obj.get('coeff', 0),
+			increment	=jsn_obj.get('increment', 0)
+		)
 
-			obj = Obj(
-				time	=base_obj.threshold,
-				value	=base_obj.increment if is_bin else base_obj.coeff,
-				is_bin	=is_bin
-			)
-
-			self.ops[base_obj.op + self.trains[base_obj.train].op_start].obj = obj
+		if obj.coeff == 0 and obj.increment == 0:
+			return
+		
+		assert(obj.coeff == 0 or obj.increment == 0)
+		self.objs.append(obj)
 
 
-	def add_levels(self):
-		self.levels = []
+	def make_pred_ops(self):
+		for op in self.ops:
+			for s in op.succ:
+				self.ops[s].pred.append(op.idx)
+
+
+	def train_ops(self, t) -> List[Op]:
+		train = self.trains[t]
+		return self.ops[train.op_start:train.op_last]
+
+	def propagate_lb(self):
+		n_pred = [op.n_pred for op in self.ops]
 
 		for train in self.trains:
-			base_train = self.base_inst.trains[train.idx]
+			q = [train.op_start]
 
-			disj_set = Disjoint_set(base_train.n_ops)
+			while q:
+				o = q.pop(0)
 
-			for base_op in base_train.ops:
-				for i, s1 in enumerate(base_op.succ):
-					for s2 in base_op.succ[i+1:]:
-						disj_set.union_set(s1, s2)
-			
-			train.level_start = self.n_levels
+				op = self.ops[o]
+				
+				path_bnd = None
+				for p in op.pred:
+					pred = self.ops[p]
 
-			for succ_set in disj_set.get_sets():
-				level = Level(idx=self.n_levels, train=train.idx)
+					pred_bnd = pred.start_lb + pred.dur
+					path_bnd = pred_bnd if path_bnd is None else min(pred_bnd, path_bnd)
 
-				for o in succ_set:
-					self.ops[o + train.op_start].level_start = level.idx
+				if path_bnd:
+					op.start_lb = max(op.start_lb, path_bnd)
 
-				self.levels.append(level)
-
-			last_level = Level(idx=self.n_levels, train=train.idx)
-			self.levels.append(last_level)
-			
-			train.level_start = self.n_levels
-		
-			for o, base_op in enumerate(base_train.ops):
-				if base_op.n_succ == 0:
-					self.ops[o + train.op_start].level_end = last_level.idx
-				else:
-					self.ops[o + train.op_start].level_end = self.ops[base_op.succ[0] + train.op_start].level_start
-
-			
-			for o, base_op in enumerate(base_train.ops):
-				for s in base_op.succ:
-					assert(self.ops[o + train.op_start].level_end == self.ops[s + train.op_start].level_start)
+				for s in op.succ:
+					n_pred[s] -= 1
+					if n_pred[s] == 0:
+						q.append(s)
 
 
-		for op in self.ops:
-			assert(op.level_start != -1 and op.level_end != -1)
-			self.levels[op.level_end].ops_in.append(op.idx)
-			self.levels[op.level_start].ops_out.append(op.idx)
+	def propagete_ub(self):
+		n_succ = [op.n_succ for op in self.ops]
 
-		
-		for level in self.levels:
-			level.time_lb = min((self.ops[o].start_lb for o in level.ops_out), default=0)
-			level.time_ub = max((self.ops[o].start_ub for o in level.ops_out), default=MAX_DUR)
+		for train in self.trains:
+			q = [train.op_last]
 
+			while q:
+				o = q.pop(0)
 
-	def res_idx(self, name: str) -> int:
-		idx = self.__res_name_idx.get(name, -1)
-		
-		if idx == -1:
-			idx = len(self.__res_name_idx)
-			self.__res_name_idx[name] = idx
+				op = self.ops[o]
+				
+				succ_ubs = [self.ops[s].start_ub for s in op.succ]
 
-		return idx
+				if op.n_succ > 0 and not any(x is None for x in succ_ubs):
+					op.start_ub = max(succ_ubs) - op.dur
+
+				for p in op.pred:
+					n_succ[p] -= 1
+					if n_succ[p] == 0:
+						q.append(p)
 
 
 	@property
 	def n_trains(self):
 		return len(self.trains)
-
-
-	@property
-	def n_levels(self):
-		return len(self.levels)
-
-
+	
 	@property
 	def n_ops(self):
 		return len(self.ops)
 
-	
-	
-
-
 	@property
 	def n_res(self):
-		return len(self.__res_name_idx)
+		return len(self.res_name_idx)
+
+
+def test_op_succ(inst: Instance):
+	for op in inst.ops:
+		for s in op.succ:
+			succ = inst.ops[s]
+			assert(op.idx in succ.pred)
+
+		for p in op.pred:
+			pred = inst.ops[p]
+			assert(op.idx in pred.succ)
+
 
 if __name__ == '__main__':
 	data = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_DATA
 	print(data)
 	inst = Instance(data)
+	test_op_succ(inst)
