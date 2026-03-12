@@ -74,8 +74,8 @@ class Instance:
 	def __init__(self, jsn_file: str):
 		self.parse_json_file(jsn_file)
 		self.make_pred_ops()
-		self.propagate_lb()
-		self.propagete_ub()
+
+		print(f'Instance - trains: {self.n_trains}, ops: {self.n_ops}, res: {self.n_res}')
 
 
 	def parse_json_file(self, jsn_file: str):

@@ -28,10 +28,13 @@ class Disjoint_set:
 
 			self.n_sets -= 1
 	
-	def get_sets(self):
-		sets = defaultdict(list)
+	def get_result(self):
+		idx_map = {}
 
 		for v in range(self.n_items):
-			sets[self.find_set(v)].append(v)
+			if v == self.find_set(v):
+				idx_map[v] = len(idx_map)
+		
+		set_idx = [idx_map[self.find_set(v)] for v in range(self.n_items)]
 
-		return sets
+		return set_idx
