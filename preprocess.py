@@ -43,6 +43,10 @@ class Junction:
 @dataclass
 class Level:
 	idx: int = -1
+
+	time_lb: int = 0
+	time_ub: int|None = None
+
 	juncts: List[int] = field(default_factory=list)
 
 
@@ -75,6 +79,9 @@ class Preprocess:
 
 		self.make_junctions()
 		self.make_levels()
+
+		self.make_junction_bounds()
+		self.make_level_bounds()
 
 		print(f'Preprocess - junctions: {self.n_juncts}, levels: {self.n_levels}')
 
@@ -158,20 +165,21 @@ class Preprocess:
 				self.ops[o].level_start = junct.level
 
 
+	def make_junction_bounds(self):
+		for junct in self.juncts:
+			if junct.n_op_out > 0:
+				junct.time_lb = min(self.inst.ops[o].start_lb for o in junct.ops_out)
+				junct.time_ub = max(self.inst.ops[o].start_ub for o in junct.ops_out)
+			else:
+				ops_in = [self.inst.ops[o] for o in junct.ops_in]
+				junct.time_lb = min(op.start_lb + op.dur for op in ops_in)
+				junct.time_ub = max(op.start_ub + op.dur for op in ops_in)
+
+
 	def make_level_bounds(self):
 		for level in self.levels:
-			if level.n_op_out > 0:
-				lbs = [self.inst.ops[o].start_lb for o in level.ops_out]
-				ubs = [self.inst.ops[o].start_ub for o in level.ops_out]
-				
-			else:
-				ops_in = [self.inst.ops[o] for o in level.ops_in]
-				lbs = [op.start_lb + op.dur for op in ops_in]
-				ubs = [op.start_ub + op.dur if op.start_ub else None for op in ops_in]
-
-			level.time_lb = min(lbs)
-			if not any(x is None for x in ubs):
-				level.time_ub = max(ubs)
+			level.time_lb = min(self.juncts[j].time_lb for j in level.juncts)
+			level.time_ub = max(self.juncts[j].time_ub for j in level.juncts)
 
 
 	@property
@@ -187,10 +195,10 @@ class Preprocess:
 		for j, junct in enumerate(self.juncts):
 			for o in junct.ops_in:
 				assert(self.ops[o].junct_end == j)
-
 			
 			for o in junct.ops_out:
 				assert(self.ops[o].junct_start == j)
+
 
 
 if __name__ == '__main__':

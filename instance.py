@@ -75,6 +75,11 @@ class Instance:
 		self.parse_json_file(jsn_file)
 		self.make_pred_ops()
 
+		self.set_max_ub()
+		self.propagate_lb()
+		self.propagete_ub()
+		self.test_bounds()
+
 		print(f'Instance - trains: {self.n_trains}, ops: {self.n_ops}, res: {self.n_res}')
 
 
@@ -163,6 +168,16 @@ class Instance:
 		train = self.trains[t]
 		return self.ops[train.op_start:train.op_last]
 
+
+	def set_max_ub(self):
+		max_ub = sum(op.dur for op in self.ops) + \
+			max(self.ops[train.op_start].start_lb for train in self.trains)
+		
+		for op in self.ops:
+			if op.start_ub is None:
+				op.start_ub = max_ub
+
+
 	def propagate_lb(self):
 		n_pred = [op.n_pred for op in self.ops]
 
@@ -171,18 +186,13 @@ class Instance:
 
 			while q:
 				o = q.pop(0)
-
 				op = self.ops[o]
 				
-				path_bnd = None
-				for p in op.pred:
-					pred = self.ops[p]
+				pred_ops = [self.ops[p] for p in op.pred]
+				pred_bounds = [pred.start_lb + pred.dur for pred in pred_ops]
 
-					pred_bnd = pred.start_lb + pred.dur
-					path_bnd = pred_bnd if path_bnd is None else min(pred_bnd, path_bnd)
-
-				if path_bnd:
-					op.start_lb = max(op.start_lb, path_bnd)
+				if pred_bounds:
+					op.start_lb = max(op.start_lb, min(pred_bounds))
 
 				for s in op.succ:
 					n_pred[s] -= 1
@@ -198,19 +208,22 @@ class Instance:
 
 			while q:
 				o = q.pop(0)
-
 				op = self.ops[o]
 				
-				succ_ubs = [self.ops[s].start_ub for s in op.succ]
+				succ_ops = [self.ops[p] for p in op.succ]
+				succ_bounds = [succ.start_ub - op.dur for succ in succ_ops]
 
-				if op.n_succ > 0 and not any(x is None for x in succ_ubs):
-					op.start_ub = max(succ_ubs) - op.dur
+				if succ_bounds:
+					op.start_ub = min(op.start_ub, max(succ_bounds))
 
 				for p in op.pred:
 					n_succ[p] -= 1
 					if n_succ[p] == 0:
 						q.append(p)
 
+	def test_bounds(self):
+		for op in self.ops:
+			assert(op.start_lb <= op.start_ub)
 
 	@property
 	def n_trains(self):

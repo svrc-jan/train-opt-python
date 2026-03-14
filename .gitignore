@@ -1,6 +1,3 @@
-__pycache__/*
-.venv/*
-.vscode/*
-__pycache__/*
-lic/**
-*.mps
+__pycache__/
+.venv/
+.vscode/
