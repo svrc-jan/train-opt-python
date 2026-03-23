@@ -3,8 +3,10 @@
 import sys
 
 from copy import copy
-from typing import List, Dict
+from array import array
+from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import List
 from disjoint_set import Disjoint_set
 from instance import Instance
 
@@ -12,7 +14,7 @@ MAX_DUR = 100000
 DEFAULT_DATA = 'data/nor1_critical_0.json'
 
 
-@dataclass
+@dataclass(slots=True)
 class Op:
 	junct_start: int = -1
 	junct_end: int = -1
@@ -20,7 +22,7 @@ class Op:
 	level_end: int = -1
 
 
-@dataclass
+@dataclass(slots=True)
 class Junction:
 	idx: int = -1
 	level: int = -1
@@ -28,8 +30,11 @@ class Junction:
 	time_lb: int = 0
 	time_ub: int|None = None
 
-	ops_in: List[int] = field(default_factory=list)
-	ops_out: List[int] = field(default_factory=list)
+	ops_in: array = field(default_factory=lambda: array('I'))
+	ops_out: array = field(default_factory=lambda: array('I'))
+
+	# res_unlocks: Set[int] = field(default_factory=set)
+	# res_locks: Set[int] = field(default_factory=set)
 
 	@property
 	def n_op_in(self):
@@ -40,18 +45,18 @@ class Junction:
 		return len(self.ops_out)
 
 
-@dataclass
+@dataclass(slots=True)
 class Level:
 	idx: int = -1
 
 	time_lb: int = 0
 	time_ub: int|None = None
 
-	juncts: List[int] = field(default_factory=list)
+	juncts: array = field(default_factory=lambda: array('I'))
 
 
 @dataclass
-class Train:
+class Train(slots=True):
 	junct_start: int = -1
 	junct_end: int = -1
 	level_start: int = -1
@@ -82,6 +87,8 @@ class Preprocess:
 
 		self.make_junction_bounds()
 		self.make_level_bounds()
+
+		self.make_res_locks()
 
 		print(f'Preprocess - junctions: {self.n_juncts}, levels: {self.n_levels}')
 
@@ -180,6 +187,43 @@ class Preprocess:
 		for level in self.levels:
 			level.time_lb = min(self.juncts[j].time_lb for j in level.juncts)
 			level.time_ub = max(self.juncts[j].time_ub for j in level.juncts)
+
+
+	def make_res_locks(self):
+		rs = [set(res.idx for res in op.res) for op in self.inst.ops]
+
+		for junct in self.juncts:
+			for o in junct.ops_in:
+				op = self.inst.ops[o]
+				
+				for s in op.succ:
+					diff = rs[o] - rs[s]
+					junct.res_unlocks |= diff
+
+			for o in junct.ops_out:
+				op = self.inst.ops[o]
+				
+				for p in op.pred:
+					diff = rs[o] - rs[p]
+					junct.res_locks |= diff
+
+
+		self.locks = defaultdict(list)
+		self.unlocks = defaultdict(list)
+
+		for junct in self.juncts:
+			for r in junct.res_locks:
+				self.locks[r].append(junct.idx)
+
+			for r in junct.res_unlocks:
+				self.unlocks[r].append(junct.idx)
+
+		edges = 0
+		for r in range(self.inst.n_res):
+			edges += len(self.locks[r])*len(self.unlocks[r])
+
+		print(f'res edges: {edges}')
+
 
 
 	@property

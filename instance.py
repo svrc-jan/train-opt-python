@@ -6,27 +6,27 @@ import json
 from typing import List, Dict
 from collections import defaultdict
 from dataclasses import dataclass, field
+from array import array
 
 
 DEFAULT_DATA = 'data/nor1_critical_2.json'
 
-@dataclass
+
+
+@dataclass(slots=True)
 class Res:
 	idx: int = -1
 	time: int = 0
 
-
-@dataclass
+@dataclass(slots=True)
 class Op:
-	idx: int = -1
 	train: int = -1
-
 	dur: int = 0
 	start_lb: int = 0
 	start_ub: int|None = None
 
-	succ: List[int] = field(default_factory=list)
-	pred: List[int] = field(default_factory=list)
+	succ: array = field(default_factory=lambda: array('I'))
+	pred: array = field(default_factory=lambda: array('I'))
 	res: List[Res] = field(default_factory=list)
 
 	@property
@@ -42,7 +42,7 @@ class Op:
 		return len(self.res)
 
 
-@dataclass
+@dataclass(slots=True)
 class Obj:
 	op_idx: int = -1
 	threshold: int = 0
@@ -50,7 +50,7 @@ class Obj:
 	increment: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class Train:
 	idx: int = -1
 	op_start: int = -1
@@ -75,8 +75,8 @@ class Instance:
 		self.parse_json_file(jsn_file)
 		self.make_pred_ops()
 
-		self.set_max_ub()
 		self.propagate_lb()
+		self.set_max_ub()
 		self.propagete_ub()
 		self.test_bounds()
 
@@ -170,9 +170,29 @@ class Instance:
 
 
 	def set_max_ub(self):
-		max_ub = sum(op.dur for op in self.ops) + \
-			max(self.ops[train.op_start].start_lb for train in self.trains)
-		
+		n_succ = [op.n_succ for op in self.ops]
+		dist = [0]*self.n_ops
+
+		for train in self.trains:
+			q = [train.op_last]
+
+			while q:
+				o = q.pop(0)
+				op = self.ops[o]
+
+				for p in op.pred:
+					dist[p] = max(dist[p], dist[o] + self.ops[p].dur)
+					n_succ[p] -= 1
+					if n_succ[p] == 0:
+						q.append(p)
+
+		train_dur = [dist[train.op_start] for train in self.trains]
+		total_dur = sum(train_dur)
+
+		max_ub = 0
+		for op in self.ops:
+			max_ub = max(max_ub, op.start_lb + dist[o] + total_dur - train_dur[op.train])
+
 		for op in self.ops:
 			if op.start_ub is None:
 				op.start_ub = max_ub
@@ -220,6 +240,7 @@ class Instance:
 					n_succ[p] -= 1
 					if n_succ[p] == 0:
 						q.append(p)
+
 
 	def test_bounds(self):
 		for op in self.ops:
