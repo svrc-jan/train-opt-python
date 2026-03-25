@@ -15,20 +15,7 @@ from preprocess import Preprocess
 DEFAULT_DATA = 'data/nor1_critical_0.json'
 
 
-class Alt_graph:
-	inst: Instance
-	prepr: Preprocess
-
-	n_nodes: int
-	n_alts: int
-
-	time_lbs: List[int]
-
-	start_nodes: List[int]
-	last_nodes: List[int]
-
-	path_durs: List[Tuple[int, int]]
-
+class Graph:
 	# res_backward: List[List[int, int, int, bool]]
 	res_forward: List[List[Tuple[int, int, int, bool]]]
 	

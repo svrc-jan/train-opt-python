@@ -6,11 +6,11 @@ from copy import copy
 from array import array
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Set
 from disjoint_set import Disjoint_set
 from instance import Instance
 
-MAX_DUR = 100000
+
 DEFAULT_DATA = 'data/nor1_critical_0.json'
 
 
@@ -33,9 +33,6 @@ class Junction:
 	ops_in: array = field(default_factory=lambda: array('I'))
 	ops_out: array = field(default_factory=lambda: array('I'))
 
-	# res_unlocks: Set[int] = field(default_factory=set)
-	# res_locks: Set[int] = field(default_factory=set)
-
 	@property
 	def n_op_in(self):
 		return len(self.ops_in)
@@ -55,8 +52,8 @@ class Level:
 	juncts: array = field(default_factory=lambda: array('I'))
 
 
-@dataclass
-class Train(slots=True):
+@dataclass(slots=True)
+class Train:
 	junct_start: int = -1
 	junct_end: int = -1
 	level_start: int = -1
@@ -251,4 +248,66 @@ if __name__ == '__main__':
 	inst = Instance(data)
 	prepr = Preprocess(inst)
 
-	prepr.test_juncts()
+	res_uses = [[] for _ in range(inst.n_res)]
+
+	for op in inst.ops:
+		for res in op.res:
+			res_uses[res.idx].append((op.train, op.idx))
+
+
+	edges = [[[] for _ in range(inst.n_trains)] for _ in range(inst.n_trains)]
+	
+	edge_count = 0
+	for r, ru in enumerate(res_uses):
+		for t1, o1 in ru:
+			l1s = prepr.ops[o1].level_start
+			l1e = prepr.ops[o1].level_end
+
+			for t2, o2 in ru:
+				if t1 != t2:
+					l2s = prepr.ops[o2].level_start
+					l2e = prepr.ops[o2].level_end
+
+					edges[t1][t2].append((o1, l1s, l1e, o2, l2s, l2e))
+					edge_count += 1
+
+	
+	comp_count = 0
+	set_count = 0
+	for t1 in range(inst.n_trains):
+		for t2 in range(inst.n_trains):
+			es = edges[t1][t2]
+			n = len(es)
+
+			es.sort(key=lambda x: (x[1], x[2], x[4], x[5]))
+
+			edge_sets = [] 
+
+			while es:
+				s = [es[0]]
+
+				i = 0
+				while i < len(s):
+					e1 = s[i]
+
+					j = 0
+					while j < len(es):
+						e2 = es[j]
+
+						comp_count += 1
+
+						if (e1[2] >= e2[1]) and (e1[4] <= e2[5]) or (e2[2] >= e1[1]) and (e2[4] <= e1[5]):
+							s.append(es.pop(j))
+						elif e1[2] < e2[1]:
+							break
+						else:
+							j += 1
+					
+					i += 1
+				
+				edge_sets.append(s)
+
+			set_count += len(edge_sets)
+
+
+	print(f'edges: {edge_count}, sets: {set_count}, comps: {comp_count}')

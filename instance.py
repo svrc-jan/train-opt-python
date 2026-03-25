@@ -20,6 +20,7 @@ class Res:
 
 @dataclass(slots=True)
 class Op:
+	idx: int = -1
 	train: int = -1
 	dur: int = 0
 	start_lb: int = 0
@@ -274,5 +275,24 @@ if __name__ == '__main__':
 	data = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_DATA
 	print(data)
 	inst = Instance(data)
-	test_op_succ(inst)
 	
+	res_uses = [[] for _ in range(inst.n_res)]
+
+	for op in inst.ops:
+		for res in op.res:
+			res_uses[res.idx].append((op.train, op.idx))
+
+
+	edges = [[[] for _ in range(inst.n_trains)] for _ in range(inst.n_trains)]
+	
+	count = 0
+	for r, ru in enumerate(res_uses):
+		for t1, o1 in ru:
+			for t2, o2 in ru:
+				if t1 != t2:
+					edges[t1][t2].append((o1, o2))
+					count += 1
+
+	print(f'edge count: {count}')
+
+
