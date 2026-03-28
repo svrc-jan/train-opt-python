@@ -9,19 +9,20 @@ import matplotlib.pyplot as plt
 from array import array, ArrayType
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Set
 
 from disjoint_set import Disjoint_set
 from instance import Instance, IDX_MAX, TIME_MAX
 
 
-DEFAULT_DATA = 'data/nor1_critical_0.json'
+DEFAULT_DATA = 'data/nor1_full_0.json'
 
 
 @dataclass(slots=True)
 class Junction:
 	idx: int = IDX_MAX
 	level: int = IDX_MAX
+	train: int = IDX_MAX
 
 	time_lb: int = 0
 	time_ub: int = TIME_MAX
@@ -41,6 +42,7 @@ class Junction:
 @dataclass(slots=True)
 class Level:
 	idx: int = IDX_MAX
+	train: int = IDX_MAX
 
 	required: bool = True
 	routing: bool = True
@@ -64,13 +66,15 @@ class Level:
 
 @dataclass(slots=True)
 class Train:
+	idx: int = IDX_MAX
+
 	junct_first: int = IDX_MAX
 	junct_after: int = IDX_MAX
 	level_first: int = IDX_MAX
 	level_after: int = IDX_MAX
 
-	branch_sections: List[Tuple[Tuple[int, int], int]] = field(default_factory=dict)
-	choke_sections: List[Tuple[Tuple[int, int], int]] = field(default_factory=dict)
+	branch_sections: List[Tuple[Tuple[int, int], int]] = field(default_factory=list)
+	choke_sections: List[Tuple[Tuple[int, int], int]] = field(default_factory=list)
 
 	prepr_juncts: List[Junction] = None
 	prepr_levels: List[Level] = None
@@ -105,6 +109,7 @@ class Branch_area:
 	idx: int = IDX_MAX
 	borders: List[Tuple[int, int]] = field(default_factory=list)
 	sections: Dict[int, Tuple[int, int]] = field(default_factory=dict)
+	res: Set[int] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -112,6 +117,7 @@ class Choke_area:
 	idx: int = IDX_MAX
 	borders: Tuple[int, int] = (IDX_MAX, IDX_MAX)
 	sections: Dict[int, Tuple[int, int]] = field(default_factory=dict)
+	res: Set[int] = field(default_factory=set)
 
 
 class Preprocess:
@@ -120,6 +126,7 @@ class Preprocess:
 	juncts: List[Junction]
 	levels: List[Level]
 	trains: List[Train]
+
 	branch_areas: List[Branch_area]
 	choke_areas: List[Choke_area]
 
@@ -136,6 +143,7 @@ class Preprocess:
 	op_choke: ArrayType[int]
 	
 	res_choke: ArrayType[int]
+	res_choke_area: ArrayType[int]
 
 	def __init__(self, inst):
 		self.inst = inst
@@ -147,15 +155,22 @@ class Preprocess:
 		self.make_level_bounds()
 
 		self.find_required_levels()
-
 		self.find_required_ops()
+
 		self.find_choke_res()
 		self.find_choke_ops()
+
+		self.make_sections()
 		self.make_areas()
 
+		self.make_area_resources()
+		self.add_boundary_sections()
+
 		n_required = sum(level.required for level in self.levels)
+		n_boundary_choke = sum(area.borders[1] == IDX_MAX for area in self.choke_areas)
 		
-		print(f'Preprocess - junctions: {self.n_juncts}, levels: {self.n_levels} (required: {n_required}), branch areas: {self.n_branch_areas}, choke areas: {self.n_choke_areas}')
+		print(f'Preprocess - junctions: {self.n_juncts}, levels: {self.n_levels} (required: {n_required})\n' + 
+			  f'             branch areas: {self.n_branch_areas}, choke areas: {self.n_choke_areas} (boundary: {n_boundary_choke})')
 
 	def make_junctions(self):
 		self.op_junct_start = array('I')
@@ -165,7 +180,7 @@ class Preprocess:
 			self.op_junct_start.append(IDX_MAX)
 			self.op_junct_end.append(IDX_MAX)
 
-		self.trains = [Train() for _ in range(self.inst.n_trains)]
+		self.trains = [Train(idx=i) for i in range(self.inst.n_trains)]
 
 		n_juncts = 0
 
@@ -214,6 +229,10 @@ class Preprocess:
 		for train in self.trains:
 			train.prepr_juncts = self.juncts
 
+			for junct in train.juncts:
+				assert(junct.train == IDX_MAX)
+				junct.train = train.idx
+
 
 	def make_levels(self):
 		in_deg = [junct.n_pred for junct in self.juncts]
@@ -246,6 +265,10 @@ class Preprocess:
 		
 		for train in self.trains:
 			train.prepr_levels = self.levels
+
+			for level in train.levels:
+				assert(level.train == IDX_MAX)
+				level.train = train.idx
 
 		self.op_level_start = array('I')
 		self.op_level_end = array('I')
@@ -429,15 +452,15 @@ class Preprocess:
 
 		for op in self.inst.ops:
 			if self.op_required[op.idx]:
-				is_border = True
+				is_choke = True
 				for res in op.res:
 					if self.res_choke[res] == 0:
-						is_border = False
+						is_choke = False
 						break
 			else:
-				is_border = False
+				is_choke = False
 			
-			self.op_choke.append(is_border)
+			self.op_choke.append(is_choke)
 
 		for train in self.inst.trains:
 			border = []
@@ -446,16 +469,23 @@ class Preprocess:
 					border.append(o)
 
 		
-	def make_areas(self):
+	def make_sections(self):
 		sections: List[Tuple[int, int, int]] = []
 		
 		for train in self.inst.trains:
-			borders = []
+			prepr_train = self.trains[train.idx]
+			border_start = [prepr_train.level_first]
+			border_end = []
+			
 			for o in train.op_range:
 				if self.op_choke[o]:
-					borders.append((self.op_level_start[o], self.op_level_end[o]))
+					border_end.append(self.op_level_start[o])
+					border_start.append(self.op_level_end[o])
 
-			for (_, l_start), (l_end, _) in zip(borders[:-1], borders[1:]):
+			border_end.append(prepr_train.level_last)
+
+
+			for l_start, l_end in zip(border_start, border_end):
 				assert(l_start <= l_end)
 				if (l_start < l_end):
 					sections.append((l_start, l_end, train.idx))
@@ -480,6 +510,7 @@ class Preprocess:
 				disj_set.union_set(i, j)
 
 		sec_area = disj_set.get_result(True)
+		self.branch_areas = [Branch_area(idx=i) for i in range(disj_set.n_sets)]
 
 		branch_sections = [{} for _ in range(self.inst.n_trains)]
 
@@ -490,42 +521,25 @@ class Preprocess:
 			a = sec_area[s]
 
 			if a in bs:
-				bs = (min(l_start, bs[a][0]), max(l_end, bs[s][1]))
+				bs = (min(l_start, bs[a][0]), max(l_end, bs[a][1]))
 			else:
 				bs[a] = (l_start, l_end)
 
 
-		for t, train in enumerate(self.trains):
-			bs = [((v[0], v[1]), k) for k, v in branch_sections[t].items()]
+		for train in self.trains:
+			bs = [((v[0], v[1]), k) for k, v in branch_sections[train.idx].items()]
 			bs.sort()
 			
 			cs = []
-			
-			l_first = train.level_first
-			op_first = self.inst.ops[self.inst.trains[t].op_first]
-			if op_first.n_res == 0:
-				l_first += 1
-
-			(l_end, _), a_end = bs[0]
-			if l_first < l_end:
-				cs.append(((l_start, l_end), (IDX_MAX, a_end)))
-			
+				
 			for ((_, l_start), a_start), ((l_end, _), a_end) in zip(bs[:-1], bs[1:]):
 				cs.append(((l_start, l_end), (a_start, a_end)))
-
-			l_last = train.level_last
-			op_last = self.inst.ops[self.inst.trains[t].op_last]
-			if op_last.n_res == 0:
-				l_last -= 1
-			
-			(_, l_start), a_start = bs[-1]
-			if l_start < l_last:
-				cs.append(((l_start, l_last), (a_start, IDX_MAX)))
 
 			train.branch_sections = bs
 			train.choke_sections = cs
 
-		
+
+	def make_areas(self):
 		ca = set()
 
 		for train in self.trains:
@@ -539,13 +553,11 @@ class Preprocess:
 		ca.sort()
 
 		ca_mp = { v: i for i, v in enumerate(ca) }
+		self.choke_areas = [Choke_area(idx=i, borders=b) for i, b in enumerate(ca)]
 
-		self.branch_areas = [Branch_area(idx=i) for i in range(disj_set.n_sets)]
-		self.choke_areas = [Choke_area(idx=v, borders=k) for k, v in ca_mp.items()]
-
-		for t, train in enumerate(self.trains):
+		for train in self.trains:
 			for sec, a in train.branch_sections:
-				self.branch_areas[a].sections[t] = sec
+				self.branch_areas[a].sections[train.idx] = sec
 			
 			new_cs = []
 			for sec, a in train.choke_sections:
@@ -555,9 +567,127 @@ class Preprocess:
 				i = ca_mp[a]
 
 				new_cs.append((sec, i))
-				self.choke_areas[i].sections[t] = sec
+				self.choke_areas[i].sections[train.idx] = sec
 
 			train.choke_sections = new_cs
+
+	def make_area_resources(self):
+		self.res_choke_area = array('I')
+		for _ in range(self.inst.n_res):
+			self.res_choke_area.append(IDX_MAX)
+		
+		for area in self.branch_areas:
+			for l_start, l_end in area.sections.values():
+				for l in range(l_start, l_end):
+					for _, o in self.levels[l].succ:
+						area.res.update(r for r in self.inst.ops[o].res)
+		
+		for area in self.choke_areas:
+			for sec in area.sections.values():
+				for l in range(min(sec), max(sec)):
+					for _, o in self.levels[l].succ:
+						area.res.update(r for r in self.inst.ops[o].res)
+
+		for area in self.choke_areas:
+			for r in area.res:
+				assert(self.res_choke_area[r] == IDX_MAX)
+				self.res_choke_area[r] = area.idx
+		
+
+	def add_boundary_sections(self):
+		for train in self.trains:
+			self.add_start_boundary(train)
+			self.add_end_boundary(train)
+
+
+	def add_start_boundary(self, train: Train):
+		l_start = train.level_first
+		(l_end, _), a_end = train.branch_sections[0]
+
+		while l_start < l_end:
+			if any(self.inst.ops[o].n_res > 0 for _, o in self.levels[l_start].succ):
+				break
+			l_start += 1
+
+		start_ops = array('I')
+		for l in range(l_start, l_end):
+			start_ops.extend(o for _, o in self.levels[l].succ)
+		
+		assert(all(self.op_choke[o] for o in start_ops))
+
+		if len(start_ops) > 0:
+			res = set()
+			for o in start_ops:
+				res.update(r for r in self.inst.ops[o].res)
+
+			a = IDX_MAX
+			for r in res:
+				if a < IDX_MAX:
+					assert(a == self.res_choke_area[r])
+				else:
+					a = self.res_choke_area[r]
+
+			if a < IDX_MAX:
+				ca = self.choke_areas[a]
+				if ca.borders[1] == a_end:
+					ca.sections[train.idx] = (l_start, l_end)
+				else:
+					assert(ca.borders[0] == a_end)
+					ca.sections[train.idx] = (l_end, l_start)
+			else:
+				ca = Choke_area(idx=self.n_choke_areas)
+				ca.borders = (a_end, IDX_MAX)
+				ca.sections[train.idx] = (l_end, l_start)
+
+				for r in res:
+					self.res_choke_area[r] = ca.idx
+
+				self.choke_areas.append(ca)
+			
+
+	def add_end_boundary(self, train: Train):
+		l_end = train.level_last
+		(_, l_start), a_start = train.branch_sections[-1]
+
+		while l_start < l_end:
+			if any(self.inst.ops[o].n_res > 0 for _, o in self.levels[l_end].pred):
+				break
+			l_end -= 1
+
+		end_ops = array('I')
+		for l in range(l_start, l_end):
+			end_ops.extend(o for _, o in self.levels[l].succ)
+		
+		assert(all(self.op_choke[o] for o in end_ops))
+
+		if len(end_ops) > 0:
+			res = set()
+			for o in end_ops:
+				res.update(r for r in self.inst.ops[o].res)
+
+			a = IDX_MAX
+			for r in res:
+				if a < IDX_MAX:
+					assert(a == self.res_choke_area[r])
+				else:
+					a = self.res_choke_area[r]
+
+			if a < IDX_MAX:
+				ca = self.choke_areas[a]
+				if ca.borders[0] == a_start:
+					ca.sections[train.idx] = (l_start, l_end)
+				else:
+					assert(ca.borders[1] == a_start)
+					ca.sections[train.idx] = (l_end, l_start)
+			else:
+				ca = Choke_area(idx=self.n_choke_areas)
+				ca.borders = (a_start, IDX_MAX)
+				ca.sections[train.idx] = (l_start, l_end)
+
+				for r in res:
+					self.res_choke_area[r] = ca.idx
+
+				self.choke_areas.append(ca)
 
 
 	@property
