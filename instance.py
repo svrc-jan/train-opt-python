@@ -96,7 +96,10 @@ class Instance:
 		self.propagete_ub()
 		self.test_bounds()
 
-		print(f'Instance - trains: {self.n_trains}, ops: {self.n_ops}, res: {self.n_res}')
+		print('Instance\n' 							+ 
+			f'  - trains:     {self.n_trains}\n'	+ 
+			f'  - operations: {self.n_ops}\n' 		+ 
+			f'  - resources:  {self.n_res}')
 
 
 	def parse_json_file(self, jsn_file: str):

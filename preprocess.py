@@ -165,12 +165,22 @@ class Preprocess:
 
 		self.make_area_resources()
 		self.add_boundary_sections()
+		self.make_branch_borders()
 
-		n_required = sum(level.required for level in self.levels)
+		n_opt_levels = sum(level.required == False for level in self.levels)
 		n_boundary_choke = sum(area.borders[1] == IDX_MAX for area in self.choke_areas)
 		
-		print(f'Preprocess - junctions: {self.n_juncts}, levels: {self.n_levels} (required: {n_required})\n' + 
-			  f'             branch areas: {self.n_branch_areas}, choke areas: {self.n_choke_areas} (boundary: {n_boundary_choke})')
+		print('Preprocess\n'													+
+			f'  - junctions:    {self.n_juncts}\n'								+
+			f'  - levels:       {self.n_levels} (opt: {n_opt_levels})\n'		+
+			f'  - branch areas: {self.n_branch_areas}\n' 						+ 
+			f'  - choke areas:  {self.n_choke_areas} (bndr: {n_boundary_choke})')
+		
+		n_choke_ops = sum(self.op_choke)
+		n_req_ops = sum(self.op_required) - n_choke_ops
+		n_opt_ops = self.inst.n_ops - n_choke_ops - n_req_ops
+
+		print(f'  - operations:\n      - choke:    {n_choke_ops}\n      - required: {n_req_ops}\n      - optional: {n_opt_ops}')
 
 	def make_junctions(self):
 		self.op_junct_start = array('I')
@@ -636,6 +646,7 @@ class Preprocess:
 					ca.sections[train.idx] = (l_end, l_start)
 			else:
 				ca = Choke_area(idx=self.n_choke_areas)
+				ca.res = res
 				ca.borders = (a_end, IDX_MAX)
 				ca.sections[train.idx] = (l_end, l_start)
 
@@ -689,6 +700,15 @@ class Preprocess:
 
 				self.choke_areas.append(ca)
 
+
+	def make_branch_borders(self):
+		for area in self.choke_areas:
+			i, j = area.borders
+			self.branch_areas[i].borders.append((j, area.idx))
+			if j < IDX_MAX:
+				self.branch_areas[j].borders.append((i, area.idx))
+
+		print([len(area.borders) for area in self.branch_areas])
 
 	@property
 	def n_juncts(self):
