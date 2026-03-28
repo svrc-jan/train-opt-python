@@ -6,29 +6,34 @@ import json
 from typing import List, Dict
 from collections import defaultdict
 from dataclasses import dataclass, field
-from array import array
+from array import array, ArrayType
 
 
 DEFAULT_DATA = 'data/nor1_critical_2.json'
 
-
+IDX_MAX = 0xffff
+TIME_MAX = 0xffffffff
 
 @dataclass(slots=True)
 class Res:
-	idx: int = -1
+	idx: int = IDX_MAX
 	time: int = 0
 
 @dataclass(slots=True)
 class Op:
-	idx: int = -1
-	train: int = -1
+	idx: int = IDX_MAX
+	train: int = IDX_MAX
+
 	dur: int = 0
 	start_lb: int = 0
-	start_ub: int|None = None
+	start_ub: int = TIME_MAX
 
-	succ: array = field(default_factory=lambda: array('I'))
-	pred: array = field(default_factory=lambda: array('I'))
-	res: List[Res] = field(default_factory=list)
+	succ: ArrayType[int] = field(default_factory=lambda: array('I'))
+	pred: ArrayType[int] = field(default_factory=lambda: array('I'))
+	res: ArrayType[int] = field(default_factory=lambda: array('I'))
+	res_time: ArrayType[int] = field(default_factory=lambda: array('I'))
+
+	obj: int = IDX_MAX
 
 	@property
 	def n_succ(self):
@@ -45,7 +50,7 @@ class Op:
 
 @dataclass(slots=True)
 class Obj:
-	op_idx: int = -1
+	op_idx: int = IDX_MAX
 	threshold: int = 0
 	coeff: int = 0
 	increment: int = 0
@@ -53,17 +58,27 @@ class Obj:
 
 @dataclass(slots=True)
 class Train:
-	idx: int = -1
-	op_start: int = -1
-	op_end: int = -1
+	idx: int = IDX_MAX
+	op_first: int = IDX_MAX
+	op_after: int = IDX_MAX
+
+	inst_ops: List[Op] = None
 
 	@property
 	def n_ops(self):
-		return self.op_end - self.op_start
+		return self.op_after - self.op_first
 	
 	@property
 	def op_last(self):
-		return self.op_end - 1
+		return self.op_after - 1
+	
+	@property
+	def ops(self) -> List[Op]:
+		return self.inst_ops[self.op_first:self.op_after]
+
+	@property
+	def op_range(self):
+		return range(self.op_first, self.op_after)
 
 
 class Instance:
@@ -103,16 +118,18 @@ class Instance:
 
 	def parse_json_train(self, jsn_train: dict):
 		train = Train(idx=self.n_trains)
-		train.op_start = self.n_ops
+		train.inst_ops = self.ops
+
+		train.op_first = self.n_ops
 		
 		for jsn_op in jsn_train:
 			self.parse_json_op(jsn_op, train)
 
-		train.op_end = self.n_ops
+		train.op_after = self.n_ops
 		self.trains.append(train)
 
 		# check if only last op is ending op (n_succ == 0), required for solver
-		for op in self.ops[train.op_start:train.op_last]:
+		for op in self.ops[train.op_first:train.op_last]:
 			assert(op.n_succ > 0)
 
 		assert(self.ops[train.op_last].n_succ == 0)
@@ -124,17 +141,24 @@ class Instance:
 			train 	=train.idx,
 			dur		=jsn_op['min_duration'],
 			start_lb=jsn_op.get('start_lb', 0),
-			start_ub=jsn_op.get('start_ub', None)
+			start_ub=jsn_op.get('start_ub', TIME_MAX)
 		)
 
 		for s in jsn_op['successors']:
-			op.succ.append(s + train.op_start)
+			op.succ.append(s + train.op_first)
 
 		for jsn_res in jsn_op.get('resources', []):
 			res_name = jsn_res['resource']
 			res_time = jsn_res.get('release_time', 0)
+
+			res_idx = self.res_name_idx[res_name]
 			
-			op.res.append(Res(idx=self.res_name_idx[res_name], time=res_time))
+			try:
+				i = op.res.index(res_idx)
+				op.res_time[i] = max(op.res_time[i], res_time)
+			except ValueError:			
+				op.res.append(res_idx)
+				op.res_time.append(res_time)
 
 		self.ops.append(op)
 
@@ -143,7 +167,7 @@ class Instance:
 		if jsn_obj['type'] != 'op_delay':
 			return
 		
-		op_idx = self.trains[jsn_obj['train']].op_start + jsn_obj['operation']
+		op_idx = self.trains[jsn_obj['train']].op_first + jsn_obj['operation']
 		
 		obj = Obj(
 			op_idx		=op_idx,
@@ -156,18 +180,20 @@ class Instance:
 			return
 		
 		assert(obj.coeff == 0 or obj.increment == 0)
+		self.ops[op_idx].obj = self.n_objs
 		self.objs.append(obj)
 
 
 	def make_pred_ops(self):
 		for op in self.ops:
 			for s in op.succ:
-				self.ops[s].pred.append(op.idx)
+				succ = self.ops[s]
+				succ.pred.append(op.idx)
 
 
-	def train_ops(self, t) -> List[Op]:
+	def train_ops(self, t: int) -> List[Op]:
 		train = self.trains[t]
-		return self.ops[train.op_start:train.op_last]
+		return self.ops[train.op_first:train.op_after]
 
 
 	def set_max_ub(self):
@@ -187,7 +213,7 @@ class Instance:
 					if n_succ[p] == 0:
 						q.append(p)
 
-		train_dur = [dist[train.op_start] for train in self.trains]
+		train_dur = [dist[train.op_first] for train in self.trains]
 		total_dur = sum(train_dur)
 
 		max_ub = 0
@@ -195,7 +221,7 @@ class Instance:
 			max_ub = max(max_ub, op.start_lb + dist[o] + total_dur - train_dur[op.train])
 
 		for op in self.ops:
-			if op.start_ub is None:
+			if op.start_ub == TIME_MAX:
 				op.start_ub = max_ub
 
 
@@ -203,7 +229,7 @@ class Instance:
 		n_pred = [op.n_pred for op in self.ops]
 
 		for train in self.trains:
-			q = [train.op_start]
+			q = [train.op_first]
 
 			while q:
 				o = q.pop(0)
@@ -247,6 +273,14 @@ class Instance:
 		for op in self.ops:
 			assert(op.start_lb <= op.start_ub)
 
+
+	def get_op_obj(self, o: int):
+		op = self.ops[o]
+		if op.obj < IDX_MAX:
+			return self.objs[op.obj]
+		return None
+
+
 	@property
 	def n_trains(self):
 		return len(self.trains)
@@ -258,6 +292,10 @@ class Instance:
 	@property
 	def n_res(self):
 		return len(self.res_name_idx)
+	
+	@property
+	def n_objs(self):
+		return len(self.objs)
 
 
 def test_op_succ(inst: Instance):
@@ -292,6 +330,8 @@ if __name__ == '__main__':
 				if t1 != t2:
 					edges[t1][t2].append((o1, o2))
 					count += 1
+
+	
 
 	print(f'edge count: {count}')
 

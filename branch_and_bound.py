@@ -35,7 +35,7 @@ class Graph:
 	path_vertex: NDArray[np.uint16]
 	path_edge: NDArray[np.uint32]
 	time: NDArray[np.uint32]
-	order: array
+	order: ArrayType[int]
 
 	next_edge_idx: int
 	free_edge_idx: List[int]
@@ -197,9 +197,6 @@ class Path_and_cycle:
 
 		self.paths = paths
 
-		self.prep_graph()
-		self.prep_model()
-
 
 	def get_random_path(self, t: int):
 		train = self.inst.trains[t]
@@ -342,7 +339,7 @@ class Path_and_cycle:
 	def add_cycle_cons(self, cycle_edges):
 		expr = self.get_expr_from_edge(cycle_edges)
 		self.m.addConstr(sum(expr) <= len(expr) - 1)
-		print('cycle cons', expr)
+		print('cycle const', expr)
 		
 	
 	def get_obj_delay(self):
